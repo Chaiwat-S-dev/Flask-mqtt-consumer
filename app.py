@@ -1,7 +1,7 @@
 import ssl
 from flask import Flask
 from model.models import db
-from mqtt.mqtt import mqtt_client
+from mqtt.mqtt import mqtt_client, initial_query_device
 from utils.cache import cache
 from route import api
 from utils.config import *
@@ -33,6 +33,8 @@ def create_app() -> Flask:
     app = Flask(__name__)
     app.config.from_mapping({**mqtt_config, **redis_config, **sqlalchemy_config})
     db.init_app(app)
+    with app.app_context():
+        initial_query_device()
     cache.init_app(app)
     api.init_app(app)
     mqtt_client.init_app(app)
