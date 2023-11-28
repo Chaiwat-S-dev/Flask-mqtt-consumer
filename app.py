@@ -22,7 +22,10 @@ mqtt_config = {
     "MQTT_TLS_CIPHERS": None
 }
 redis_config = {
-    "CACHE_TYPE": "SimpleCache",
+    "CACHE_REDIS_HOST": REDIS_HOST,
+    "CACHE_REDIS_PORT": REDIS_PORT,
+    "CACHE_REDIS_DB": 1,
+    "CACHE_TYPE": "RedisCache",
     "CACHE_DEFAULT_TIMEOUT": 300
 }
 sqlalchemy_config = {
