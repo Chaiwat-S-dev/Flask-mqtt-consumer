@@ -4,7 +4,7 @@ from datetime import datetime
 from flask_mqtt import Mqtt
 from sqlalchemy import not_
 
-from utils.cache import cache
+from cache.cache import cache
 from model.models import db, DeviceModel
 from utils.clean_data import temphumid_make_data
 from utils.handle_callback import HandleDataField
