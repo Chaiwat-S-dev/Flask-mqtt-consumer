@@ -1,150 +1,117 @@
-from datetime import datetime
-from time import sleep
+from json import loads
+from cache.cache import cache
+from utils.clean_data import advantech_make_data, make_influx_data, imonit_clean_data
+from utils.handle_data import handle_callback, make_arguments
+from utils.observer import Publisher, InhandCacheObserver, CacheObserver, InfluxObserver
 
-from influxdb_client import InfluxDBClient, WritePrecision, Point
-from influxdb_client.client.write_api import SYNCHRONOUS
+inhand_publisher = Publisher()
+inhand_publisher.attach(InhandCacheObserver)
+inhand_publisher.attach(InfluxObserver)
 
-from utils.config import INFLUX_URL, INFLUX_TOKEN, DEBUG
-from utils.clean_data import has_required_fields, make_influx_data, imonit_clean_data
+publisher = Publisher()
+publisher.attach(CacheObserver)
+publisher.attach(InfluxObserver)
 
-from logger.logging import SingletonLogger
+def handle_data_inhand(data, schema, **kwargs):
+    datas = []
+    for slave, register_object in data.get("values", {}).items():
+        if slave in schema.keys():
+            for register, value_object in register_object.items():
+                if register in schema[slave] and isinstance(value_object, dict):
+                    value_object.pop("timestamp")
+                    for k, v in value_object.items():
+                        value_object[k] = float(v) if isinstance(v, int) else v
+                    
+                    influx_data = {
+                        "measurement": kwargs.get("measurement"),
+                        "tags": {
+                            "mac_address": data.get("mac_address"),
+                            "group_name": data.get("group_name"),
+                            "slave": slave,
+                            "reg_field": register,
+                        },
+                        "fields": value_object,
+                    }
+                    datas.append(influx_data)
 
-log = SingletonLogger.get_logger_instance().logger
+    if datas:
+        inhand_publisher.notify(datas, **kwargs)
 
-def insert_influx(influx_data, record_tags, record_keys, **kwargs):
-    organization, bucket, measurement, _ = kwargs.values()
-    client_influx = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=organization)
-    write_api = client_influx.write_api(write_options=SYNCHRONOUS)
-    point = Point.from_dict(influx_data, write_precision=WritePrecision.MS,
-                            record_measurement_name=measurement,
-                            record_time_key="timestamp",
-                            record_tag_keys=record_tags,
-                            record_field_keys=record_keys
-                            )
-    print(f'[Data Topic]: data to line protocol: {point.to_line_protocol()}')
-    if DEBUG:
-        log.info(f'[Data Topic]: data to line protocol: {point.to_line_protocol()}')
-    try:
-        write_api.write(bucket, organization, point)
-    except Exception as e:
-        log.error(f'[Influx error]: {e=}')
-        sleep(1)
+def handle_data_normal(data, schema={}, **kwargs):
+    record_field_keys = []
 
-def influxdb_write_json_data(list_json_data, **kwargs):
-    organization, bucket, measurement, _ = kwargs.values()
-    client_influx = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=organization)
-    write_api = client_influx.write_api(write_options=SYNCHRONOUS)
-
-    if DEBUG:
-        log.info(f'[Data Topic]: data to line protocol: {list_json_data}')
-    try:
-        write_api.write(org=organization, bucket=bucket, record=list_json_data, write_precision=WritePrecision.NS)
-    except Exception as e:
-        log.error(f'[Influx error]: {e=}')
-        sleep(1)
-    
-
-def handle_data_inhand(req, db, data={}, hierachy_level=0, **kwargs):
-
-    if isinstance(req, dict):
-        if hierachy_level == 2 and db.get("equation"):
-            
-            from collections import OrderedDict
-            param_equation = {}
-            _req = OrderedDict(sorted(req.items()))
-            
-            for reg, reg_val in _req.items():
-                if (reg in db.keys()):
-                    if isinstance(reg_val, dict):
-                        for k, v in reg_val.items():
-                            reg_val[k] = float(v) if isinstance(v, int) else v
-                        param_equation.update({reg: reg_val.get('raw_data', 0.0)})
-                        influx_data = {**data, **reg_val}
-            
-            influx_data = {
-                **influx_data, 
-                **{
-                    "reg_field": list(param_equation.keys())[0], 
-                    "raw_data": eval(db.get("equation"), param_equation), 
-                    "timestamp": datetime.utcnow(), 
-                    "mac_address": kwargs.get("mac_address")
-                }
-            }
-            
-            record_field_keys = db[reg].copy()
-            record_field_keys.remove("timestamp")
-            record_tag_keys=["slave", "reg_field", "mac_address", "group_name"]
-            
-            insert_influx(influx_data, record_tag_keys, record_field_keys, **kwargs)
-            return
-
-        for slave, slave_val in req.items():
-            match hierachy_level:
-                case 0:
-                    if slave == "group_name":
-                        data.update({"group_name": slave_val})
-                    if slave in db.keys():
-                        handle_data_inhand(slave_val, db[slave], data, hierachy_level+1, **kwargs)
-
-                case 1:
-                    data.update({"slave": slave})
-                    if slave in db.keys():
-                        handle_data_inhand(slave_val, db[slave], data, hierachy_level+1, **kwargs)
-
-                case _:
-                    if slave in db.keys():
-                        if isinstance(slave_val, dict):
-                            for k, v in slave_val.items():
-                                slave_val[k] = float(v) if isinstance(v, int) else v
-                            
-                            data.update({"reg_field": slave})
-                            influx_data = {
-                                **data, **slave_val, 
-                                    **{
-                                        "timestamp": datetime.utcnow(), 
-                                        "mac_address": kwargs.get("mac_address")
-                                    }
-                                }
-                            record_field_keys = db[slave].copy()
-                            record_field_keys.remove("timestamp")
-                            record_tag_keys=["slave", "reg_field", "mac_address", "group_name"]
-
-                            insert_influx(influx_data, record_tag_keys, record_field_keys, **kwargs)
-
-def handle_data_normal(req, data={}, **kwargs):
-    record_field_keys, record_tag_keys = [], ["mac_address"]
-
-    for k, v in req.items():
+    for k, v in data.items():
         if k not in ["mac_address", "timestamp"]:
             record_field_keys.append(k)
-        req[k] = float(v) if isinstance(v, int) else v
+        data[k] = float(v) if isinstance(v, int) else v
 
-    influx_data = {**req, **{"timestamp": datetime.utcnow()}}
-    insert_influx(influx_data, record_tag_keys, record_field_keys, **kwargs)
+    influx_data = {
+        "measurement": kwargs.get("measurement"),
+        "tags": {
+            "mac_address": data.get("mac_address"),
+        },
+        "fields": {k: v for k, v in data.items() if k in record_field_keys},
+    }
+    publisher.notify([influx_data], **kwargs)
 
-def handle_data_beacon(req, data={}, **kwargs):
-    record_field_keys, record_tag_keys = [], ["mac_address"]
-    for k, v in req.items():
+def handle_data_beacon(data, schema={}, **kwargs):
+    record_field_keys = []
+    for k, v in data.items():
         if k not in ["mac_address", "timestamp", "type", "bleName", "rawData", "mac"]:
             record_field_keys.append(k)
-        req[k] = float(v) if isinstance(v, int) else v
+        data[k] = float(v) if isinstance(v, int) else v
 
-    influx_data = {**req, **{"timestamp": datetime.utcnow()}}
-    insert_influx(influx_data, record_tag_keys, record_field_keys, **kwargs)\
+    influx_data = {
+        "measurement": kwargs.get("measurement"),
+        "tags": {
+            "mac_address": data.get("mac_address"),
+        },
+        "fields": {k: v for k, v in data.items() if k in record_field_keys},
+    }
+    publisher.notify([influx_data], **kwargs)
     
-def handle_data_chirpstack(req, data={}, **kwargs):
-    is_required_fields = has_required_fields(req)
-    if is_required_fields:
-        make_data = make_influx_data(req)
-        influxdb_write_json_data(make_data, **kwargs)
+def handle_data_chirpstack(data, schema={}, **kwargs):
+    if data.get('object'):
+        if datas:= make_influx_data(data):
+            publisher.notify(datas, **kwargs)
 
-def handle_data_temphumid(req, data={}, **kwargs):
-    influxdb_write_json_data(req, **kwargs)
+def handle_data_temphumid(datas, schema={}, **kwargs):
+    publisher.notify(datas, **kwargs)
 
-def handle_data_imonit(req, data={}, **kwargs):
-    data = imonit_clean_data(req)
-    if data:
-        influxdb_write_json_data(data, **kwargs)
+def handle_data_imonit(data, schema={}, **kwargs):
+    if datas := imonit_clean_data(data):
+        publisher.notify(datas, **kwargs)
+
+def handle_advantech(message: dict, get_params_list=[], **kwargs):
+    payload = {}
+    for param_object in get_params_list:
+        if all(
+                (arg in message.keys() or isinstance(arg, (int, float))) for arg in param_object.get('arguments', [])
+            ):
+            parameter = param_object.get('parameter', None)
+            func = param_object.get('function', None)
+            func_calback = handle_callback(func)
+            arguments = param_object.get('arguments', [])
+            clean_arguments = make_arguments(arguments, message)
+
+            if parameter and func_calback:
+                sensor_value = func_calback(*clean_arguments)
+
+                if equation := param_object.get('equation', None):
+                    sensor_value = eval(equation, {"value": sensor_value})
+
+                # validate khw_total, khw_total1, khw_total2
+                if parameter in ['kwh_total', 'kwh_total1', 'kwh_total2', 'flow_today', 'flow1_today', 'flow2_today', 'flow3_today']:
+                    if result := cache.get(kwargs.get('mac_address')):
+                        result = loads(result)
+                        if result and len(result) > 0:
+                            parameter_history_values = [ row.get(parameter) for row in result if row.get(parameter) ]
+                            if parameter_history_values and (parameter_lasted_value := parameter_history_values[-1]) and sensor_value < parameter_lasted_value:
+                                sensor_value = parameter_lasted_value
+                payload[parameter] = sensor_value
+    if payload:
+        if datas := advantech_make_data(kwargs.get('gateway'), kwargs.get('mac_address'), payload):
+            publisher.notify(datas, **kwargs)
 
 class HandleDataField:
     brand_device = {
@@ -153,7 +120,8 @@ class HandleDataField:
         "beacon": handle_data_beacon,
         "chirpstack": handle_data_chirpstack,
         "temphumid": handle_data_temphumid,
-        "imonit": handle_data_imonit,
+        "imonit": handle_data_imonit,   
+        "advantech": handle_advantech,
     }
     handle_func = None
     data_schema = {}
