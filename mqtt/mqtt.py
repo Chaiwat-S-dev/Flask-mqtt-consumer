@@ -8,7 +8,7 @@ from utils.cache import cache
 from model.models import db, DeviceModel
 from utils.clean_data import temphumid_make_data
 from utils.handle_callback import HandleDataField
-from utils.logging import SingletonLogger
+from logger.logging import SingletonLogger
 
 class DeviceTopicStructure:
     topic_listen: list = []

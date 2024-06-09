@@ -7,7 +7,7 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from utils.config import INFLUX_URL, INFLUX_TOKEN, DEBUG
 from utils.clean_data import has_required_fields, make_influx_data, imonit_clean_data
 
-from .logging import SingletonLogger
+from logger.logging import SingletonLogger
 
 log = SingletonLogger.get_logger_instance().logger
 
