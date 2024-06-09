@@ -2,56 +2,12 @@ import json
 from datetime import datetime
 
 from flask_mqtt import Mqtt
-from sqlalchemy import not_
 
 from cache.cache import cache
-from model.models import db, DeviceModel
 from utils.clean_data import temphumid_make_data
-from utils.handle_callback import HandleDataField
-from logger.logging import SingletonLogger
+from utils.struct import device_topic_struct
 
-class DeviceTopicStructure:
-    topic_listen: list = []
-    map_mac_func: dict = {}
-    group_topic_list: dict = {}
-
-device_topic_struct = DeviceTopicStructure()
 mqtt_client = Mqtt()
-
-log = SingletonLogger.get_logger_instance().logger
-
-
-def query_device_to_topic_list(query_list:list=[]):
-    group_topic_list, map_mac_func = {}, {}
-
-    for device in query_list:
-        topic = f"swd/{device.organization.code}/{device.bucket}/{device.measurement}"
-
-        influx_param = {
-            'organization': device.organization,
-            'bucket': device.bucket,
-            'measurement': device.measurement,
-            'mac_address': device.mac_address
-        }
-        handle_field_obj = HandleDataField(device.brand, device.parameters, influx_param)
-        map_mac_func.update({device.mac_address: handle_field_obj})
-        
-        # Brand in ("inhand", "beacon")
-        if device.brand != 'chirpstack': 
-            if list_mac := group_topic_list.get(topic, None):
-                list_mac.append(device.mac_address)
-            else:
-                group_topic_list.update({topic: [device.mac_address]})
-    
-    device_topic_struct.topic_listen = list(group_topic_list.keys())
-    device_topic_struct.map_mac_func = map_mac_func
-    device_topic_struct.group_topic_list = group_topic_list
-
-def initial_query_device():
-    list_devices = db.session.query(DeviceModel).\
-                filter(DeviceModel.is_activated == True, DeviceModel.deleted == None, not_(DeviceModel.brand.like('chirpstack')))\
-                .order_by(DeviceModel.id.asc()).all()
-    query_device_to_topic_list(list_devices)
 
 @mqtt_client.on_connect()
 def handle_connect(client, userdata, flags, rc):
