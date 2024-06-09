@@ -1,8 +1,7 @@
-from datetime import datetime
 import re
 
 def has_required_fields(message):
-    keys_list = ['humidity', 'temperature', 'water_leak', 'adc1', 'adc2', 'chn25', 'chn26']
+    keys_list = ['humidity', 'temperature', 'water_leak', 'adc1', 'adc2', 'chn25', 'chn26', 'battery', 'temp']
 
     if message.get('object', False):
         for key in message['object'].keys():
@@ -37,7 +36,6 @@ def make_influx_data(data):
     }
 
     for key, value in data['object'].items():
-        
         raw_data.update({
             "tags": {
                 "deviceName": data['deviceName'],
@@ -47,13 +45,12 @@ def make_influx_data(data):
                 "applicationID": data['applicationID']
             }
         })
-        
         if key == 'water_leak':
             fields[key] = 1 if value == 'leak' else 0
         elif key in ['din1', 'dout1']:
             fields[key] = 0 if value == 'off' else 1
         elif key in ['adc1', 'adc2']:
-            raw_data['tags'].update({ "adc": key, })
+            raw_data['tags'].update({"adc": key})
             
             adc_fields = {}
             for adc_field, adc_value in value.items():
@@ -66,8 +63,18 @@ def make_influx_data(data):
         elif key in ['chn25', 'chn26']:
             fields.update({key: value})
         else:
-            fields.update({key: float(value)})
-    
+            try:
+                if isinstance(value, (int, float)):
+                    fields.update({key: float(value)})
+                elif isinstance(value, str) and value.replace('.', '', 1).isdigit():
+                    fields.update({key: float(value)})
+                else:
+                    print(f"ValueErrorType: key = '{key}' value = '{value}', value_type: '{type(value)}'")
+                    continue
+                
+            except ValueError:
+                print(f"KeyError: key = '{key}' value = '{value}', value_type: '{type(value)}'")
+
     if fields:
         json_body.append({
             **raw_data,
@@ -77,76 +84,29 @@ def make_influx_data(data):
     return json_body
 
 def imonit_clean_data(message):
-    """
-    example message = {
-                        "gatewayMessage": {
-                            "gatewayID": "958985",
-                            "gatewayName": "Ethernet Gateway 4 - 958985",
-                            "accountID": "40753",
-                            "networkID": "67685",
-                            "messageType": "0",
-                            "power": "0",
-                            "batteryLevel": "101",
-                            "date": "2023-07-21 03:02:30",
-                            "count": "1",
-                            "signalStrength": "0",
-                            "pendingChange": "False"
-                        },
-                        "sensorMessages": [
-                            {
-                            "sensorID": "711352",
-                            "sensorName": "Vibrate: SCHP No.4 - 711352",
-                            "applicationID": "95",
-                            "networkID": "67685",
-                            "dataMessageGUID": "ccf1ae81-f74b-4f1e-b191-87feb8dedc34",
-                            "state": "0",
-                            "messageDate": "2023-07-21 03:02:34",
-                            "rawData": "7.3%7c9.5%7c8.7%7c44%7c39%7c56%7c100%7c0",
-                            "dataType": "Speed|Speed|Speed|Frequency|Frequency|Frequency|Percentage",
-                            "dataValue": "7.3|9.5|8.7|44|39|56|100",
-                            "plotValues": "7.3|9.5|8.7|44|39|56|100",
-                            "plotLabels": "X-Axis Speed|Y-Axis Speed|Z-Axis Speed|X-Axis Frequency|Y-Axis Frequency|Z-Axis Frequency|Duty Cycle",
-                            "batteryLevel": "100",
-                            "signalStrength": "85",
-                            "pendingChange": "True",
-                            "voltage": "2.83"
-                            }
-                        ]
-                    }
-    """
+    fields, raw_data = {}, {}
+    if (plot_lables := message.get('plotLabels', None)) and (plot_values := message.get('plotValues', None)):           
+        raw_fields = [ change_label_to_variable(i) for i in plot_lables.split('|') ]
+        raw_values = [float(i) if i else 0 for i in plot_values.split('|')]
+        data = dict(zip(raw_fields, raw_values))
+        fields.update(data)
 
-    clean_data = []
-    sensor_messages = message.get('sensorMessages', [])
+    # update battery level
+    if battery_level := message.get('batteryLevel'):
+        fields.update({ "battery_level": float(battery_level) })
 
-    if not sensor_messages:
-        return []
-
-    for row in sensor_messages:
-
-        raw_fields = [ change_label_to_variable(i) for i in row.get('plotLabels', '').split('|') ]
-        raw_values = [float(i) for i in row.get('plotValues', '').split('|')]
-        fields = dict(zip(raw_fields, raw_values))
-
-        # update battery level
-        if battery_level := row.get('batteryLevel'):
-            fields.update({ "battery_level": float(battery_level) })
-
+    if fields:
         raw_data = {
             "measurement": "imonit",
             "tags": {
-                "mac_address": row.get('sensorID'),
-                "gateway_id": row.get("gateway_id"),
-                "network_id": row.get("network_id"),
-                # "sensor_id": row.get('sensorID'),
-                # "sensor_name": row.get('sensorName'),
-                # "app_id": row.get('applicationID'),
+                "mac_address": message.get('sensorID'),
+                "gateway_id": message.get("gateway_id"),
+                "network_id": message.get("network_id"),
             },
             "fields": fields
         }
 
-        clean_data.append(raw_data)
-
-    return clean_data
+    return raw_data
 
 def temphumid_make_data(data):
     join_int_with_float = lambda a, b : float(str(a) + "." + str(b))
@@ -175,7 +135,6 @@ def temphumid_make_data(data):
                     "battery_level": battery_level
                 }
             })
-
 
         # frame_version => 05 is Temperature and Humidity Frames
         elif frame_version == "05":
@@ -213,3 +172,12 @@ def change_label_to_variable(label):
   label = re.sub(" ", "_", label)
   return label
 
+def advantech_make_data(gateway: str, mac_address: str, fields_object: dict):
+    return [{
+        "measurement": "advantech",
+        "tags": {
+            "mac_address": mac_address,
+            "gateway": gateway,
+        },
+        "fields": fields_object
+    }]
