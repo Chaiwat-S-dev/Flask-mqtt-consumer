@@ -1,6 +1,7 @@
 import os
 
 CURRENT_DIR = os.getcwd()
+HOST = os.environ.get("HOST", '0.0.0.0')
 PORT = os.environ.get("PORT", 5000)
 
 INFLUX_URL = os.environ.get("INFLUX_URL", "http://localhost:8086")
