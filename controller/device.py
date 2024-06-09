@@ -1,7 +1,7 @@
 from flask_restful import Resource, reqparse, abort
 from model.models import db, DeviceModel
 import json
-from utils.cache import cache
+from cache.cache import cache
 
 class DeviceList(Resource):
     def get(self):
